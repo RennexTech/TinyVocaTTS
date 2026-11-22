@@ -10,6 +10,7 @@ echo.
 set PY=.venv\Scripts\python.exe
 set DZ=https://github.com/n4ze3m/dizione/archive/refs/heads/main.zip
 set PKGS=onnxruntime soundfile numpy pygame huggingface_hub
+set DV=https://github.com/fraunhofer-iem/designed-voices-tts/archive/e1158b4e47053f2dae656e9c7ba1535554c7780c.tar.gz
 
 rem ---------- 1. virtual environment (first run only) ----------
 if exist "%PY%" goto have_venv
@@ -49,6 +50,33 @@ if not exist "tiny-voca\phonemizer\lexicon.tsv" goto dl_fail
 echo.
 :have_model
 
+rem ---------- 4. Voca64 voice pack: 32 English voices (PyTorch, one time) ----------
+"%PY%" -c "import torch, safetensors, designed_tts" 2>nul
+if not errorlevel 1 goto have_voca_pkgs
+echo [*] Voca64 voices: installing PyTorch, about 200 MB, one time only...
+"%PY%" -m pip install torch safetensors
+if errorlevel 1 goto voca_warn
+"%PY%" -m pip install --no-deps %DV%
+if errorlevel 1 goto voca_warn
+echo.
+:have_voca_pkgs
+
+if exist "designed-voices\voca64\config.json" if exist "designed-voices\voca64\model.safetensors" goto have_voca_model
+echo [*] Downloading the Voca64 voices, about 18 MB...
+"%PY%" -c "from huggingface_hub import snapshot_download as d; d('Fraunhofer-IEM/tiny-voca-de-en', local_dir='designed-voices', allow_patterns=['voca64/*'])"
+if errorlevel 1 goto voca_warn
+if not exist "designed-voices\voca64\model.safetensors" goto voca_warn
+echo.
+:have_voca_model
+goto launch
+
+:voca_warn
+echo.
+echo [!] Voca64 setup did not finish. The studio will start with the Classic voices.
+echo     Run this .bat again later to retry.
+echo.
+
+:launch
 if not exist "tiny_voca_studio.py" (
     echo [X] tiny_voca_studio.py missing next to this .bat
     pause & exit /b 1
