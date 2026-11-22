@@ -7,6 +7,12 @@ running the 4.5M-parameter tiny-voca model (two voices, F2 + M2, 24 kHz) on CPU 
 ONNX Runtime, with the dizione phonemizer.  Extras: pitch + expression sliders, thread
 count and a thread benchmark.
 
+Voice packs (dropdown under the engine controls):
+  Classic  - the original model, voices F2 + M2, ONNX Runtime (fast, no extra install).
+  Voca64   - Fraunhofer-IEM/tiny-voca-de-en, 32 English voices (PyTorch).  Same phoneme
+             ids as dizione, so the same English phonemizer drives it.
+             Installed by tinyvoca_pro.bat (one bat does everything)
+
 Output names:  001.F2.2026-11-16.The_morning_the_river_froze.mp3
 First run:  tinyvoca_pro.bat (creates .venv, installs packages, downloads the model).
 After that:  tinyvoca_pro.vbs (silent launcher).
@@ -3085,6 +3091,16 @@ VOICE_IDS = ['F2', 'M2']
 VOICE_LABELS = ['F2   -   American English, female',
                 'M2   -   American English, male']
 
+# Voice packs.  'classic' = n4ze3m/tiny-voca (ONNX).  'voca64' = Fraunhofer-IEM/tiny-voca-de-en
+# voca64/ variant (PyTorch, loaded with the designed_tts package; files by tinyvoca_pro.bat).
+PACKS = {
+    'classic': 'Classic   -   F2 + M2, ONNX (fast)',
+    'voca64': 'Voca64   -   32 English voices, PyTorch',
+}
+DV_DIR = ROOT / 'designed-voices'
+DV_MODEL = DV_DIR / 'voca64'
+DV_FILES = ('config.json', 'model.safetensors')
+
 BENCH_TEXT = ("The quick brown fox jumps over the lazy dog. This sentence is here to "
               "measure how fast the model can speak on this exact machine, right now.")
 
@@ -3133,6 +3149,35 @@ def shorter(text):
     return [' '.join(words[:half]), ' '.join(words[half:])]
 
 
+_EN_TAGS = {'en', 'eng', 'english', 'enus', 'us', 'american'}
+_DE_TAGS = {'de', 'deu', 'ger', 'german', 'deutsch'}
+
+
+def english_roster(names):
+    """Pick the English voices out of the Voca64 roster (it holds 32 German + 32 English).
+
+    Voices are recognised by a language tag in the name (en_03, english-anna, ...).  When no
+    name carries a tag the whole roster is returned and `tagged` is False.
+    Returns (names, tagged).
+    """
+    def lang(name):
+        toks = {t for t in re.split(r'[^a-z]+', name.lower()) if t}
+        if toks & _EN_TAGS:
+            return 'en'
+        if toks & _DE_TAGS:
+            return 'de'
+        return ''
+    en = [n for n in names if lang(n) == 'en']
+    if en:
+        return en, True
+    de = [n for n in names if lang(n) == 'de']
+    if de:                                   # German tagged, the rest is English by elimination
+        rest = [n for n in names if lang(n) != 'de']
+        if rest:
+            return rest, True
+    return list(names), False
+
+
 @dataclass
 class BenchRow:
     backend: str
@@ -3152,6 +3197,9 @@ class TinyVocaEngine:
         self.session = None
         self.threads = 0
         self._lock = threading.Lock()
+        self.voice_ids = list(VOICE_IDS)
+        self.voice_labels = list(VOICE_LABELS)
+        self.kind = 'ONNX'
 
     # ---- session ----
     def _build(self, threads):
@@ -3212,7 +3260,7 @@ class TinyVocaEngine:
         """Text of any length -> (float32 samples, sample rate). Sentence by sentence."""
         with self._lock:
             sess = self.session
-        voice_idx = VOICE_IDS.index(voice) if voice in VOICE_IDS else 0
+        voice_idx = self.voice_ids.index(voice) if voice in self.voice_ids else 0
         shift = float(pitch) * SEMITONE
         out = []
         silence = np.zeros(int(SAMPLE_RATE * gap), dtype=np.float32)
@@ -3247,7 +3295,7 @@ class TinyVocaEngine:
                 t0 = time.time()
                 sess = self._build(n)
                 load_s = time.time() - t0
-                idx = VOICE_IDS.index(voice) if voice in VOICE_IDS else 0
+                idx = self.voice_ids.index(voice) if voice in self.voice_ids else 0
                 sentences = [BENCH_TEXT[a:b] for a, b in split_sentences(BENCH_TEXT)]
                 phones = [dizione.phonemize(finished(s)) for s in sentences]
 
@@ -3268,7 +3316,11 @@ class TinyVocaEngine:
                 del sess
             except Exception as e:
                 rows.append(BenchRow(label, False, error=str(e)))
+        self._restore_threads()
         return rows
+
+    def _restore_threads(self):
+        pass
 
     @staticmethod
     def format_bench(rows):
@@ -3284,6 +3336,77 @@ class TinyVocaEngine:
             best = max(ok, key=lambda r: r.rtf)
             lines += ['', f'Fastest: {best.backend} ({best.rtf:.1f}x realtime)']
         return '\n'.join(lines)
+
+
+class DesignedVocaEngine(TinyVocaEngine):
+    """Voca64 (Fraunhofer-IEM/tiny-voca-de-en): the tiny-voca architecture with a 64-voice roster.
+
+    Its first 76 phoneme ids are the ones dizione produces, so dizione.phonemize() feeds it
+    directly.  Runs on PyTorch (CPU).  Speed / pitch / expression go straight into
+    TinyVoca.synthesize, so the sliders keep working.
+    """
+    def __init__(self, model_dir, status=lambda m: None):
+        super().__init__(Path(model_dir) / 'model.safetensors', status)
+        self.model_dir = Path(model_dir)
+        self.kind = 'PyTorch'
+        self.torch = None
+        self.model = None
+        self.seed = 0
+        self._all = []
+        self._vid = []
+        self.tagged = True
+
+    def _build(self, threads):
+        self.torch.set_num_threads(max(1, int(threads)))
+        return self.model
+
+    def _restore_threads(self):
+        if self.torch is not None and self.threads:
+            self.torch.set_num_threads(self.threads)
+
+    def load(self, threads):
+        import torch
+        from designed_tts.release import load_release
+        self.torch = torch
+        self.status('Loading phonemizer ...')
+        dizione.get()
+        self.status('Loading Voca64 weights ...')
+        if self.model is None:
+            rel = load_release(str(self.model_dir))
+            if rel.metadata.get('family') != 'voca':
+                raise RuntimeError('This is not a Voca model: ' + str(rel.metadata.get('family')))
+            self.model = rel.models[0]
+            self.seed = int(rel.metadata.get('default_seed', 0))
+            self._all = list(rel.voices)
+            names, self.tagged = english_roster(self._all)
+            self._vid = [self._all.index(n) for n in names]
+            self.voice_ids = names
+            tail = '' if self.tagged else '   (language not tagged, German voices are in here too)'
+            self.voice_labels = [f'{n}   -   English voice{tail}' for n in names]
+        self.status(f'Warming up on CPU ({threads} threads) ...')
+        sess = self._build(threads)
+        self._run(sess, dizione.phonemize('Warming up.'), 0, 1.0, 0.0, 1.0)
+        with self._lock:
+            self.session, self.threads = sess, int(threads)
+
+    def _run(self, sess, phones, voice_idx, speed, pitch_shift, pitch_range):
+        torch = self.torch
+        ids = [int(i) for i in phones.ids]
+        stress = [int(v) for v in phones.stress]
+        vid = self._vid[voice_idx if 0 <= voice_idx < len(self._vid) else 0]
+        speed = min(4.0, max(0.25, float(speed)))
+        prange = min(3.0, max(0.0, float(pitch_range)))
+        with torch.inference_mode():
+            wave, lengths, _ = sess.synthesize(
+                torch.tensor([ids], dtype=torch.long),
+                torch.tensor([stress], dtype=torch.long),
+                torch.tensor([len(ids)]), torch.tensor([vid]),
+                speed=speed, pitch_shift=float(pitch_shift), seed=self.seed,
+                pitch_range=prange)
+        a = wave[0, :int(lengths[0])].cpu().numpy().astype(np.float32)
+        if not np.isfinite(a).all():
+            raise RuntimeError('model produced non-finite audio')
+        return a
 
 
 class Backend:
@@ -3304,6 +3427,11 @@ class Backend:
         self.prange = float(app.cfg.get('prange', 1.0))
         self.pitch_var = tk.DoubleVar(value=self.pitch_st)
         self.range_var = tk.DoubleVar(value=self.prange)
+        saved = app.cfg.get('pack')
+        if saved not in PACKS:                  # first launch: use Voca64 when it is installed
+            saved = 'classic' if self.voca64_missing() else 'voca64'
+        self.pack = saved
+        self.engines = {}
 
     @staticmethod
     def deps_missing():
@@ -3314,6 +3442,15 @@ class Backend:
 
     def short(self, voice):
         return re.sub(r'[^\w\-]', '', voice)
+
+    @staticmethod
+    def voca64_missing():
+        """What is still missing for the Voca64 pack (empty list = ready)."""
+        miss = [m for m in ('torch', 'safetensors', 'designed_tts')
+                if importlib.util.find_spec(m) is None]
+        miss += [f'designed-voices/voca64/{f}' for f in DV_FILES
+                 if not (DV_MODEL / f).exists()]
+        return miss
 
     # ---- UI hooks ----
     def build_controls(self, card):
@@ -3347,6 +3484,15 @@ class Backend:
         self.range_lbl.grid(row=1, column=7, sticky='w', pady=(10, 0))
         ttk.Button(eng, text='Reset', command=self._reset_voice).grid(
             row=1, column=8, sticky='e', pady=(10, 0))
+
+        ttk.Label(eng, text='Voice pack', style='Card.TLabel').grid(row=2, column=0, sticky='w',
+                                                                   pady=(10, 0))
+        self.pack_box = ttk.Combobox(eng, state='readonly', style='Card.TCombobox',
+                                     font=self.app.f_ui, height=4, width=44,
+                                     values=list(PACKS.values()))
+        self.pack_box.grid(row=2, column=1, columnspan=5, sticky='w', padx=(8, 0), pady=(10, 0))
+        self.pack_box.current(list(PACKS).index(self.pack))
+        self.pack_box.bind('<<ComboboxSelected>>', self._on_pack)
         self._on_pitch()
         self._on_range()
         return eng
@@ -3369,14 +3515,38 @@ class Backend:
         self._on_pitch()
         self._on_range()
 
+    def _on_pack(self, *_):
+        self.pack_box.selection_clear()
+        key = list(PACKS)[self.pack_box.current()]
+        if key == self.pack:
+            return
+        if self.app.pending:
+            messagebox.showinfo('Busy', 'Wait for the queue to finish first.')
+            self.pack_box.current(list(PACKS).index(self.pack))
+            return
+        if self.loading:
+            self.pack_box.current(list(PACKS).index(self.pack))
+            return
+        self.app._save_cfg()                    # remembers the voice of the pack we leave
+        self.pack = key
+        self.engine = self.engines.get(key)
+        self.app._save_cfg()
+        self.start()
+
     def comboboxes(self, voice_box):
-        return [voice_box]
+        return [voice_box, self.pack_box]
 
     def apply_theme(self, P):
         self._paint_label()
 
     def save_settings(self, cfg):
         cfg['threads'] = int(self.threads_var.get())
+        cfg['pack'] = self.pack
+        if self.ready.is_set() and self.engine is not None:
+            try:                                # voice is remembered per pack
+                cfg['voice_' + self.pack] = self.app.voice_id()
+            except Exception:
+                pass
         cfg['pitch'] = float(self.pitch_st)
         cfg['prange'] = float(self.prange)
 
@@ -3385,8 +3555,9 @@ class Backend:
         if not self.ready.is_set() or not self.engine:
             return
         n = self.engine.threads
-        self.engine_lbl.configure(text=f'Engine: CPU, {n} thread' + ('s' if n != 1 else ''),
-                                  foreground=P['ok'])
+        self.engine_lbl.configure(
+            text=f'Engine: CPU {self.engine.kind}, {n} thread' + ('s' if n != 1 else ''),
+            foreground=P['ok'])
 
     # ---- engine lifecycle ----
     def start(self):
@@ -3404,25 +3575,41 @@ class Backend:
     def _load(self, threads):
         app = self.app
         try:
+            pack = self.pack
             missing = [str(p.relative_to(ROOT)) for p in
                        (MODEL, PHONEMIZER_DIR / 'lexicon.tsv') if not p.exists()]
             if missing:
                 raise FileNotFoundError(
                     'Model files missing: ' + ', '.join(missing) +
                     '\n\nRun tinyvoca_pro.bat once (visible) to download them.')
+            if pack == 'voca64':
+                miss = self.voca64_missing()
+                if miss:
+                    raise FileNotFoundError(
+                        'The Voca64 pack is not installed yet. Missing: ' + ', '.join(miss) +
+                        '\n\nRun tinyvoca_pro.bat once (visible), it installs the Voca64 pack.')
             app.set_status('Importing runtime ...')
             import_runtime()
             if self.engine is None:
-                self.engine = TinyVocaEngine(MODEL, status=app.set_status)
-            self.engine.load(max(1, threads))
+                if pack == 'voca64':
+                    self.engine = DesignedVocaEngine(DV_MODEL, status=app.set_status)
+                else:
+                    self.engine = TinyVocaEngine(MODEL, status=app.set_status)
+                self.engines[pack] = self.engine
+            eng = self.engine
+            eng.load(max(1, threads))
 
             def ready():
-                app.fill_voices(VOICE_IDS, VOICE_LABELS,
-                                app.cfg.get('voice', self.default_voice))
+                prefer = app.cfg.get('voice_' + pack) or (
+                    eng.voice_ids[0] if pack == 'voca64' and eng.voice_ids
+                    else app.cfg.get('voice', self.default_voice))
+                app.fill_voices(eng.voice_ids, eng.voice_labels, prefer)
                 self.ready.set()
                 self._paint_label()
-                app.status.set(f'Ready on CPU ({self.engine.threads} threads), '
-                               f'{len(VOICE_IDS)} voices.')
+                note = '' if getattr(eng, 'tagged', True) else \
+                    ' (no language tags in the roster: showing all voices)'
+                app.status.set(f'{PACKS[pack].split()[0]} ready on CPU ({eng.threads} threads), '
+                               f'{len(eng.voice_ids)} voices{note}.')
             app.ui(ready)
         except Exception as e:
             err = str(e)
@@ -3431,6 +3618,13 @@ class Backend:
                 self.engine_lbl.configure(text='Engine: failed', foreground=app.P['err'])
                 app.status.set('Model failed to load. Fix the problem, then Apply / reload.')
                 messagebox.showerror('Model error', err[-1500:])
+                if self.pack != 'classic':
+                    self.engines.pop(self.pack, None)
+                    self.pack = 'classic'       # go back to the working pack
+                    self.engine = self.engines.get('classic')
+                    self.pack_box.current(0)
+                    app._save_cfg()
+                    app.after(300, self.start)      # after the loading flag is cleared
             app.ui(failed)
         finally:
             def done():
