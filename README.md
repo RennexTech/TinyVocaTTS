@@ -7,7 +7,7 @@ Click on the .bat file, everything gets auto-configured, mdoels get downloaded i
 
 The new version has a dropdown to choose the latest voices, which the TinyVoca Community made within a week of its release:
 
-<img width="1043" height="892" alt="image" src="https://github.com/user-attachments/assets/a6945fd6-5d6f-4b0d-80f2-c7f0adb6f5d2" />
+<img width="1043" height="892" alt="image" src="https://github.com/user-attachments/assets/1672370c-6231-4854-b20b-7730f1441f99" />
 
 This new GUI, choose the new voices, then, 32 new voices will appear in your dropdown. Let's go!!!😈 
 
