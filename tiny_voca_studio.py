@@ -19,7 +19,7 @@ After that:  tinyvoca_pro.vbs (silent launcher).
 """
 APP_NAME = 'Tiny Voca Studio Pro'
 APP_SLUG = 'tinyvoca_pro'
-SUBTITLE = '4.5M  \u00b7  parts  \u00b7  reader  \u00b7  serious text cleaner'
+SUBTITLE = '4.5M  \u00b7  parts  \u00b7  reader'
 TITLE_FONT = ('Georgia', 20, 'bold', 'italic')
 TEXT_FONT = ('Georgia', 12)
 
@@ -911,6 +911,8 @@ class Studio(tk.Tk):
         self.status = tk.StringVar(value='Starting ...')
         self.mp3 = tk.BooleanVar(value=bool(self.cfg.get('mp3', True)) and bool(self.ffmpeg))
         self.auto_clean = tk.BooleanVar(value=bool(self.cfg.get('auto_clean', True)))
+        self.run_mode = tk.StringVar(
+            value='auto' if self.cfg.get('run_mode') == 'auto' else 'manual')
         self.replace_old = tk.BooleanVar(value=bool(self.cfg.get('replace_old', True)))
         self.follow = tk.BooleanVar(value=bool(self.cfg.get('follow', True)))
         self.autonext = tk.BooleanVar(value=bool(self.cfg.get('autonext', False)))
@@ -946,7 +948,7 @@ class Studio(tk.Tk):
             self.cfg.update(
                 theme='dark' if self.dark else 'light', mode=self.mode,
                 voice=self.voice_id(), speed=round(self.speed.get(), 2),
-                mp3=self.mp3.get(), auto_clean=self.auto_clean.get(),
+                mp3=self.mp3.get(), auto_clean=self.auto_clean.get(), run_mode=self.run_mode.get(),
                 replace_old=self.replace_old.get(), follow=self.follow.get(),
                 autonext=self.autonext.get(), remember=self.remember.get(),
                 volume=round(self.volume.get(), 2), output=str(self.out_dir))
@@ -994,6 +996,7 @@ class Studio(tk.Tk):
                                    weight=TITLE_FONT[2], slant=TITLE_FONT[3])
         self.f_text = tkfont.Font(family=TEXT_FONT[0], size=TEXT_FONT[1])
         self.f_mono = tkfont.Font(family='Consolas', size=10)
+        self.f_seg = tkfont.Font(family=fam, size=11, weight='bold')
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -1006,10 +1009,19 @@ class Studio(tk.Tk):
         ttk.Label(head, text=APP_NAME, style='Title.TLabel').grid(row=0, column=0, sticky='w')
         ttk.Label(head, text=SUBTITLE, style='Muted.TLabel').grid(
             row=0, column=1, sticky='w', padx=14, pady=(8, 0))
+        seg = ttk.Frame(head)
+        seg.grid(row=0, column=2, padx=(0, 16))
+        self.manual_btn = ttk.Button(seg, text='MANUAL', width=11,
+                                     command=lambda: self._set_run_mode('manual'))
+        self.manual_btn.pack(side='left', padx=(0, 4))
+        self.auto_btn = ttk.Button(seg, text='AUTOMATIC', width=13,
+                                   command=lambda: self._set_run_mode('auto'))
+        self.auto_btn.pack(side='left')
+        self._paint_run_mode()
         self.mode_btn = ttk.Button(head, command=self.toggle_mode, style='Ghost.TButton')
-        self.mode_btn.grid(row=0, column=2, padx=(0, 8))
+        self.mode_btn.grid(row=0, column=3, padx=(0, 8))
         self.theme_btn = ttk.Button(head, command=self._toggle_theme, style='Ghost.TButton')
-        self.theme_btn.grid(row=0, column=3, padx=(0, 8))
+        self.theme_btn.grid(row=0, column=4, padx=(0, 8))
         self.main_menu = tk.Menu(self, tearoff=0)
         self.menus.append(self.main_menu)
         mmn = self.main_menu
@@ -1032,7 +1044,7 @@ class Studio(tk.Tk):
         mmn.add_command(label='Keyboard shortcuts', command=self._show_shortcuts)
         self.main_menu.configure(postcommand=self._refresh_menus)
         ttk.Menubutton(head, text='Menu', menu=self.main_menu, style='Ghost.TMenubutton').grid(
-            row=0, column=4)
+            row=0, column=5)
 
         self.accent_line = tk.Frame(self, height=3)
         self.accent_line.grid(row=1, column=0, sticky='ew')
@@ -1063,6 +1075,10 @@ class Studio(tk.Tk):
         self.batch_bar.grid_remove()
         self.queue_lbl = ttk.Label(bar, style='StatusMuted.TLabel')
         self.queue_lbl.grid(row=0, column=3, sticky='e')
+        self.cancel_all_btn = ttk.Button(bar, text='Cancel all', style='Undo.TButton',
+                                         command=self.cancel_all)
+        self.cancel_all_btn.grid(row=0, column=4, padx=(12, 0))
+        self.cancel_all_btn.grid_remove()
 
     def _build_side(self):
         s = self.side
@@ -1141,17 +1157,19 @@ class Studio(tk.Tk):
         for c in range(3):
             btns.columnconfigure(c, weight=1, uniform='sb')
 
-        def put(widget, r, c, span=1):
-            widget.grid(row=r, column=c, columnspan=span, sticky='ew', padx=2, pady=(0, 6))
+        def put(widget, r, c, span=1, top=0):
+            widget.grid(row=r, column=c, columnspan=span, sticky='ew', padx=2, pady=(top, 6))
         put(ttk.Button(btns, text='Add part', command=self.add_part), 0, 0)
         put(ttk.Button(btns, text='Duplicate', command=self.duplicate_part), 0, 1)
         put(ttk.Button(btns, text='Delete', command=self.delete_selected), 0, 2)
         put(ttk.Button(btns, text='Move up', command=lambda: self.move_parts(-1)), 1, 0)
         put(ttk.Button(btns, text='Move down', command=lambda: self.move_parts(1)), 1, 1)
-        put(ttk.Menubutton(btns, text='More', menu=mm), 1, 2)
+        self.more_btn = ttk.Button(btns, text='More  \u25b4', command=self._popup_more)
+        put(self.more_btn, 1, 2)
         put(ttk.Button(btns, text='Generate all', command=self.generate_all,
-                       style='Accent.TButton'), 2, 0, span=2)
-        put(ttk.Button(btns, text='Cancel all', command=self.cancel_all), 2, 2)
+                       style='Accent.TButton'), 2, 0, span=3)
+        put(ttk.Button(btns, text='Delete ALL parts + audio', command=self.delete_everything,
+                       style='Danger.TButton'), 3, 0, span=3, top=12)
 
     def _build_editor(self):
         e = self.editor
@@ -1375,6 +1393,14 @@ class Studio(tk.Tk):
                P['accent'], font=self.f_bold, pad=(10, 1))
         button('Accent.TButton', P['accent'], P['accent_fg'], P['accent_hover'],
                P['accent'], font=self.f_bold, pad=(22, 7))
+        button('SegOn.TButton', P['accent'], P['accent_fg'], P['accent_hover'], P['accent'],
+               font=self.f_seg, pad=(14, 9))
+        button('SegOff.TButton', P['surface2'], P['muted'], P['border'], P['border'],
+               font=self.f_seg, pad=(14, 9))
+        button('Danger.TButton', P['surface2'], P['err'], P['err'], P['err'],
+               font=self.f_bold, pad=(12, 7))
+        s.map('Danger.TButton', foreground=[('active', '#ffffff'), ('pressed', '#ffffff'),
+                                            ('disabled', P['muted'])])
         button('TMenubutton', P['surface2'], P['fg'], P['border'], P['border'], pad=(12, 6))
         button('Ghost.TMenubutton', P['bg'], P['muted'], P['surface2'], P['border'], pad=(12, 6))
 
@@ -1585,6 +1611,20 @@ class Studio(tk.Tk):
             return 0
         return int(r[0] if isinstance(r, (tuple, list)) else r)
 
+    def _popup_more(self):
+        b, mm = self.more_btn, self.more_menu
+        self._refresh_menus()
+        mm.update_idletasks()
+        h = mm.winfo_reqheight()
+        if h < 60:
+            h = 24 * (mm.index('end') + 1)
+        x = b.winfo_rootx()
+        y = max(0, b.winfo_rooty() - h - 6)
+        try:
+            mm.tk_popup(x, y)
+        finally:
+            mm.grab_release()
+
     def _refresh_menus(self):
         st = 'normal' if self._trash else 'disabled'
         for m in (getattr(self, 'more_menu', None), getattr(self, 'main_menu', None)):
@@ -1779,6 +1819,29 @@ class Studio(tk.Tk):
             'This clears the whole list and cancels anything still queued. Audio files stay in '
             'the output folder unless you tick the box. Undo brings the parts back (audio '
             'deleted from disk cannot come back).')
+
+    def delete_everything(self):
+        self._sync_part_text()
+        parts = list(self.parts)
+        if not any(p.text.strip() or p.audio for p in parts):
+            self.set_status('Nothing to delete.')
+            return
+        n_audio = self._audio_count(parts)
+        ok, _ = self._confirm_delete(
+            f'Delete ALL {len(parts)} part{"s" if len(parts) != 1 else ""} and '
+            f'{n_audio} audio file{"s" if n_audio != 1 else ""}?',
+            'Every part leaves the list and every audio file is deleted from disk. Anything '
+            'still queued gets cancelled. Undo brings the text back, but deleted audio cannot '
+            'come back.')
+        if not ok:
+            return
+        self.config(cursor='watch')
+        self.set_status('Deleting ...')
+        self.update_idletasks()
+        try:
+            self._report_delete(*self._remove_parts(parts, True), True)
+        finally:
+            self.config(cursor='')
 
     def delete_finished(self):
         parts = [p for p in self.parts if p.state == 'done']
@@ -2213,7 +2276,9 @@ class Studio(tk.Tk):
             self.queue_lbl.configure(text=f'{self._batch_done}/{total} done')
             self.batch_bar.configure(value=100 * self._batch_done / total)
             self.batch_bar.grid()
+            self.cancel_all_btn.grid()
         else:
+            self.cancel_all_btn.grid_remove()
             self.queue_lbl.configure(text='')
             self.batch_bar.grid_remove()
             self._batch_total = self._batch_done = 0
@@ -2317,21 +2382,73 @@ class Studio(tk.Tk):
             self.set_status('Clipboard is empty.')
             return ''
 
-    def _clean_clip(self):
+    def _clean_clip(self, force=False):
         raw = self._clip()
         if not raw:
             return ''
-        if not self.auto_clean.get():
+        if not (force or self.auto_clean.get()):
             return raw
         rep = {}
-        txt = clean_text(raw, self.clean_opts, finish=False, report=rep,
+        txt = clean_text(raw, self.clean_opts, finish=True, report=rep,
                          repl=self.cfg.get('replacements', ''))
         self.set_status(report_text(rep))
         return txt
 
     def _on_paste(self, event=None):
-        self.paste_cursor()
+        if self.run_mode.get() == 'auto':
+            self.auto_paste()
+        else:
+            self.paste_cursor()
         return 'break'
+
+    # ---------- manual / automatic ----------
+    def _paint_run_mode(self):
+        auto = self.run_mode.get() == 'auto'
+        self.manual_btn.configure(style='SegOff.TButton' if auto else 'SegOn.TButton')
+        self.auto_btn.configure(style='SegOn.TButton' if auto else 'SegOff.TButton')
+
+    def _set_run_mode(self, mode):
+        self.run_mode.set(mode)
+        self._paint_run_mode()
+        self._save_cfg()
+        if mode == 'auto':
+            self.set_status('AUTOMATIC: paste = clean + split if long + generate with the current '
+                            'voice.')
+        else:
+            self.set_status('MANUAL: you drive. Paste, clean and generate yourself.')
+
+    def auto_paste(self):
+        """Paste -> full clean -> (split if long) -> generate, using the voice already picked."""
+        txt = self._clean_clip(force=True)
+        if not txt:
+            return
+        self._sync_part_text()
+        limit = max(50, int(self.cfg.get('split_words', 1200)))
+        if len(txt.split()) > limit:
+            pieces = split_parts(txt, limit, bool(self.cfg.get('split_chapters', True)))
+        else:
+            pieces = [txt]
+        if not pieces:
+            return
+        if len(pieces) > 1 and self.mode == 'single':
+            self.mode = 'parts'
+            self._apply_mode()
+        created = []
+        if self._blank_selected():
+            cur = self.sel
+            self._set_editor_text(pieces[0])
+            created.append(cur)
+            rest = pieces[1:]
+            at = self.parts.index(cur) + 1
+        else:
+            rest = pieces
+            at = self.parts.index(self.sel) + 1 if self.sel in self.parts else len(self.parts)
+        for k, t in enumerate(rest):
+            created.append(self._new_part(t, select=not created, index=at + k))
+        self._renumber()
+        queued = sum(1 for p in created if self.generate_part(p, quiet=True))
+        self.set_status(f'Auto: cleaned and queued {queued} part{"s" if queued != 1 else ""}.')
+        self._save_session_soon()
 
     def paste_cursor(self):
         txt = self._clean_clip()
@@ -2724,6 +2841,9 @@ class Studio(tk.Tk):
             self.cancel_part(self.sel)
 
     def cancel_all(self):
+        if self.pending > 1 and not messagebox.askyesno(
+                'Cancel all', f'Cancel {self.pending} queued/running jobs?', parent=self):
+            return
         for p in self.parts:
             self.cancel_part(p)
         self.set_status('Cancelled the queue.')
