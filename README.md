@@ -12,3 +12,10 @@ The new version has a dropdown to choose the latest voices, which the TinyVoca C
 This new GUI, choose the new voices, then, 32 new voices will appear in your dropdown. Let's go!!!😈 
 
 If there's any changes, leave an issue and I will update it. 
+
+New update. I addded an auto generate and left the manual generate. 
+
+The autogenerate, cleans the text, and starts generating audio immediately the user pastes the text. 
+
+<img width="1182" height="892" alt="image" src="https://github.com/user-attachments/assets/3b3fbbea-0dce-466b-9445-23fa477a5425" />
+
