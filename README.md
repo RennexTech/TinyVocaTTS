@@ -19,3 +19,5 @@ The autogenerate, cleans the text, and starts generating audio immediately the u
 
 <img width="1182" height="892" alt="image" src="https://github.com/user-attachments/assets/3b3fbbea-0dce-466b-9445-23fa477a5425" />
 
+<img width="1182" height="892" alt="image" src="https://github.com/user-attachments/assets/d415c044-0bde-4dcb-9a0d-a7da3f491b76" />
+
